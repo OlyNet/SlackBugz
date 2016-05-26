@@ -1,0 +1,48 @@
+[%# This Source Code Form is subject to the terms of the Mozilla Public
+  # License, v. 2.0. If a copy of the MPL was not distributed with this
+  # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+  #
+  # This Source Code Form is "Incompatible With Secondary Licenses", as
+  # defined by the Mozilla Public License, v. 2.0.
+  #%]
+[% INCLUDE global/header.html.tmpl
+   title = "SlackBugz user mapping"
+%]
+
+<h1>SlackBugz user mapping</h1>
+
+<pre>[% dbg %]</pre>
+
+<style type="text/css">
+td.suggestion {
+    background-color: yellow;
+}
+.ui-helper-center {
+    text-align: center;
+}
+</style>
+[% IF users.size %]
+<form method="POST" action="page.cgi?id=slackbugz/usermap.html">
+  <table id="users_admin_table" border="1" cellpadding="4" cellspacing="0">
+    <tr>
+      <th class="ui-helper-center">Slack user</th>
+      <th class="ui-helper-center">BugZilla user</th>
+    </tr>
+    [% FOREACH u IN users %]
+    <tr>
+      <td>[% u.nick %] ([% IF u.real_name %]"[% u.real_name %]" &lt;[% END %][% u.email %][% IF u.real_name %]&gt;[% END %])</td>
+      <td[% IF !u.slack_user.user_id && u.suggested_bzuser %] class="suggestion"[% END %]>
+        <input type="hidden" name="slack[]" value="[% u.slack_user.id %]" />
+        <select name="bzuser[]">
+        [% FOREACH bu IN bzusers %]
+          <option value="[% bu.id %]"[% IF bu.id == u.slack_user.user_id || bu.id == u.suggested_bzuser.id %] selected[% END %]>[% bu.name %]</option>
+        [% END %]
+        </select>
+      </td>
+    </tr>
+  [% END %]
+  </table>
+  <button type="submit" name="action" value="save_mapping">Save</button>
+</form>
+[% END %]
+[% INCLUDE global/footer.html.tmpl %]

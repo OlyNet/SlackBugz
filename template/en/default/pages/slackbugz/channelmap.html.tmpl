@@ -1,0 +1,28 @@
+[%# This Source Code Form is subject to the terms of the Mozilla Public
+  # License, v. 2.0. If a copy of the MPL was not distributed with this
+  # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+  #
+  # This Source Code Form is "Incompatible With Secondary Licenses", as
+  # defined by the Mozilla Public License, v. 2.0.
+  #%]
+[% INCLUDE global/header.html.tmpl
+   title = "SlackBugz channel mapping"
+%]
+
+<h1>SlackBugz product to channel mapping</h1>
+
+[% IF channels.size %]
+<table id="channel_admin_table" border="1" cellpadding="4" cellspacing="0">
+<tr>
+<th>Name</th>
+<th>Associated products/components</th>
+</tr>
+[% FOREACH c IN channels %]
+<tr>
+<td><a href="https://[% domain %].slack.com/messages/[% c.name %]" target="_blank">#[% c.name %]</a></td>
+<td></td>
+</tr>
+[% END %]
+</table>
+[% END %]
+[% INCLUDE global/footer.html.tmpl %]
