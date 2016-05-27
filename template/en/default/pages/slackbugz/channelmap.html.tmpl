@@ -9,20 +9,34 @@
    title = "SlackBugz channel mapping"
 %]
 
-<h1>SlackBugz product to channel mapping</h1>
+<h1>SlackBugz channel to component mapping</h1>
+
+<pre>[% dbg %]</pre>
 
 [% IF channels.size %]
-<table id="channel_admin_table" border="1" cellpadding="4" cellspacing="0">
-<tr>
-<th>Name</th>
-<th>Associated products/components</th>
-</tr>
-[% FOREACH c IN channels %]
-<tr>
-<td><a href="https://[% domain %].slack.com/messages/[% c.name %]" target="_blank">#[% c.name %]</a></td>
-<td></td>
-</tr>
-[% END %]
-</table>
+<form method="POST" action="page.cgi?id=slackbugz/channelmap.html">
+  <table id="channel_admin_table" border="1" cellpadding="4" cellspacing="0">
+    <tr>
+      <th>Name</th>
+      <th>Associated components</th>
+    </tr>
+    [% FOREACH c IN channels %]
+    <tr>
+      <td>
+        <a href="https://[% domain %].slack.com/messages/[% c.name %]" target="_blank">#[% c.name %]</a>
+        <input type="hidden" name="channels[]" value="[% c.slack_channel.id %]"/>
+      </td>
+      <td>
+        <select name="components[[% c.slack_channel.id %]][]" multiple>
+        [% FOREACH co IN components %]
+          <option value="[% co.id %]"[% " selected" IF c.slack_channel.components.contains_component('id', co.id) %]>[% co.name %]</option>
+        [% END %]
+        </select>
+      </td>
+    </tr>
+  [% END %]
+  </table>
+  <button type="submit" name="action" value="save_mapping">Save</button>
+</form>
 [% END %]
 [% INCLUDE global/footer.html.tmpl %]

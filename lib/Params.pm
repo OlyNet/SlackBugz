@@ -21,10 +21,10 @@ sub get_param_list {
             required => 1
         },
         {
-            name    => 'SlackWebHook',
-            desc    => 'The Slack WebHook URL created for your BugZilla instance',
+            name    => 'SlackNewBugMessage',
+            desc    => 'A message displayed when a new bug was created (shown above the bug details)',
             type    => 't',
-            default => '',
+            default => 'A new bug has been created',
         },
         {
             name    => 'SlackDirectMessages',

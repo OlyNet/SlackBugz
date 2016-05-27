@@ -21,13 +21,21 @@ use Bugzilla::Util qw(trim);
 # This code for this is in ../extensions/SlackBugz/lib/Util.pm
 use Bugzilla::Extension::SlackBugz::Util;
 use Bugzilla::Extension::SlackBugz::SlackUser;
+use Bugzilla::Extension::SlackBugz::SlackChannel;
 
 use List::Util qw(first);
+use Template::Stash;
 
 use Data::Dumper;
 
-our $VERSION = '0.01';
+BEGIN {
+    $Template::Stash::LIST_OPS->{contains_component} = sub {
+        my ($list, $key, $needle) = @_;
+        return grep { defined $_ && defined $_->$key && $_->$key == $needle } @$list;
+    };
+}
 
+our $VERSION = '0.01';
 
 my $token = Bugzilla->params->{'SlackBotToken'};
 my $slack = WebService::Slack::WebApi->new(
@@ -72,6 +80,55 @@ sub db_schema_abstract_schema {
             },
         ],
     };
+
+    $schema->{slackbugz_channels} = {
+        FIELDS => [
+           id => {
+                TYPE => 'MEDIUMSERIAL',
+                NOTNULL => 1,
+                PRIMARYKEY => 1
+            },
+            channel_id => {
+                TYPE => 'varchar(10)', 
+                NOTNULL => 1,
+            },
+        ],
+        INDEXES => [
+            slackbugz_channel_unique_idx => {
+                FIELDS => [qw(channel_id)],
+                TYPE   => 'UNIQUE',
+            },
+        ],
+    };
+
+    $schema->{slackbugz_channels_components} = {
+        FIELDS => [
+            component_id => {
+                TYPE => 'INT3',
+                NOTNULL => 1,
+                REFERENCES => {
+                    TABLE => 'components',
+                    COLUMN => 'id',
+                    DELETE => 'CASCADE',
+                },
+            },
+            channel_id => {
+                TYPE => 'INT3', 
+                NOTNULL => 1,
+                REFERENCES => {
+                    TABLE => 'slackbugz_channels',
+                    COLUMN => 'id',
+                    DELETE => 'CASCADE',
+                },
+            },
+        ],
+        INDEXES => [
+            slackbugz_component_channel_unique_idx => {
+                FIELDS => [qw(component_id channel_id)],
+                TYPE   => 'UNIQUE',
+            },
+        ],
+    };
 }
 
 sub _get_slack_domain {
@@ -86,32 +143,15 @@ sub _get_slack_channels {
     return $channels->{'channels'};
 }
 
-sub _get_slack_users {
-    return grep { $_->{'name'} !~ /bot$/i } @{ $slack->users->list->{'members'} };
+sub _get_slack_username {
+    my $slack_id = shift;
+    my $r = $slack->users->info({ user => $slack_id });
+    ThrowUserError('', {slack_id => $slack_id}) unless $r;
+    return $r->{'name'} if $r;
 }
 
-sub _post_msg {
-    my ($channel, $title, $link, $color) = @_;
-
-    return unless defined($slack);
-
-    $color = $color || 'good';
-    $channel = $channel || Bugzilla->params->{'SlackDefaultChannel'} || '#general';
-    my $username = Bugzilla->params->{'SlackBotName'} || 'BugZilla';
-
-    my $msg = $slack->chat->post_message(
-        channel => $channel,
-        #'text' => $head,
-        color => $color,
-        # 'icon_url' => $icon_url
-        username => $username,
-        as_user => 0,
-        attachments => [
-            title => $title,
-            title_link => $link#,
-            #'text' => ''
-        ]
-    );
+sub _get_slack_users {
+    return grep { $_->{'name'} !~ /bot$/i } @{ $slack->users->list->{'members'} };
 }
 
 sub _get_base_url {
@@ -133,7 +173,38 @@ sub _ensure_slack_users_persisted {
                 slack_id => $slack_user->{'id'}
             });
         }
+        # TODO: handle deleted Slack IDs
     }    
+}
+
+sub _ensure_slack_channels_persisted {
+    my $channels = shift;
+
+    foreach my $channel (@$channels) {
+        if (!Bugzilla::Extension::SlackBugz::SlackChannel->exists($channel->{'id'})) {
+            Bugzilla::Extension::SlackBugz::SlackChannel->create({ 
+                channel_id => $channel->{'id'}
+            });
+        }
+        # TODO: handle deleted Slack IDs
+    }    
+}
+
+sub _post_msg {
+    my $message = shift;
+
+    return unless defined($slack);
+
+    $message->{color} ||= 'good';
+    $message->{text} ||= undef;
+    $message->{channel} ||= Bugzilla->params->{'SlackDefaultChannel'} || '#general';
+    $message->{username} ||= Bugzilla->params->{'SlackBotName'} || 'BugZilla';
+
+    my $msg = $slack->chat->post_message($message);
+
+    if (!$msg->{ok}) {
+        ThrowUserError('slackbugz_message_error', {return_message => $msg->{error}});
+    }
 }
 
 # The following subs will override the hooks and modify the behavior
@@ -142,11 +213,39 @@ sub bug_end_of_create {
     my $bug = $args->{'bug'};
     my $timestamp = $args->{'timestamp'};
     my $bug_id = $bug->id;
+    my $bug_severity = $bug->bug_severity;
+    my $bug_priority = $bug->priority;
     my $base_url = _get_base_url();
+    my $new_bug_message = Bugzilla->params->{'SlackNewBugMessage'} || undef;
+    my $bug_link = $base_url.'show_bug.cgi?id='.$bug_id;
+    my $text = '<'.$bug_link.'|#'.$bug_id.' '.$bug->short_desc.'>';
 
-    my $text = '<'.$base_url.'show_bug.cgi?id='.$bug_id.'|#'.$bug_id.' '.$bug->short_desc.'>';
+    my $message = {
+        username => Bugzilla->params->{'SlackBotName'} || 'BugZilla',
+        icon_url => _get_base_url().'extensions/SlackBugz/web/bz.png',
+        as_user => 0,
+        text => $new_bug_message,
+        attachments => [{
+            color => 'warning',
+            title => $bug->short_desc,
+            text => $bug->comments->[0]->body,
+            title_link => '<'.$bug_link.'|#'.$bug_id.'>'
+        }]
+    };
 
-   _post_msg('#sysadmin', $bug->short_desc, $base_url.'show_bug.cgi?id='.$bug_id, 'warning');
+    # If users shall be notified by direct messages, get the ID of the assignee
+    # and figure out his name on Slack
+    if (Bugzilla->params->{'SlackDirectMessages'}) {
+        $message->{channel} = _get_slack_username($bug->assigned_to->slack_user->slack_id);
+        _post_msg($message);
+    }
+
+    # Since we linked our Slack channels for convenience to Bugzilla::Component,
+    # it's now easy to iterate over all channels to be notified
+    foreach my $channel (@{ $bug->component_obj->channels }) {
+        $message->{channel} = $channel->channel_id;
+        _post_msg($message);
+    }
 }
 
 sub bug_end_of_update {
@@ -225,26 +324,28 @@ sub page_before_template {
         my %susers = map {$_->id => $_} Bugzilla::Extension::SlackBugz::SlackUser->get_all();
         my $bzusers = [values %users];
 
-        # Get the lists of the form
-        my @form_slack_ids = $cgi->param('slack[]');
-        my @form_bz_ids = $cgi->param('bzuser[]');
-
         # Execute this block only when the user hit the save button
         if ($action eq 'save_mapping') {
+            # Get the lists of the form
+            my @form_slack_ids = $cgi->param('slack[]');
+            my @form_bz_ids = $cgi->param('bzuser[]');
+
             # Iterate through both lists (equal length)
             for(my $x = 0; $x < scalar @form_slack_ids; $x++) {
-               # bzuser[] == -1 means no mapping so skip this one
-               next if $form_bz_ids[$x] == -1;
+               # bzuser[] == -1 means no mapping i.e. remove the mapping
+               $form_bz_ids[$x] = undef if $form_bz_ids[$x] == -1;
 
-               # The IDs must be valid, of course
-               ThrowUserError('object_does_not_exist', { id => $form_slack_ids[$x] })
-                   unless (defined $susers{$form_slack_ids[$x]});
-               ThrowUserError('object_does_not_exist', { id => $form_bz_ids[$x] })
-                   unless (defined $users{$form_bz_ids[$x]});
+               unless ($form_bz_ids[$x] == undef) {
+                   # The IDs must be valid, of course
+                   ThrowUserError('object_does_not_exist', { id => $form_slack_ids[$x] })
+                       unless (defined $susers{$form_slack_ids[$x]});
+                   ThrowUserError('object_does_not_exist', { id => $form_bz_ids[$x] })
+                       unless (defined $users{$form_bz_ids[$x]});
+               }
 
                # And now update our SlackUser object by setting the BugZilla user ID
                # and persisting the entity to DB
-               $susers{$form_slack_ids[$x]}->set_user_id(int($form_bz_ids[$x]));
+               $susers{$form_slack_ids[$x]}->set_user_id($form_bz_ids[$x]);
                $susers{$form_slack_ids[$x]}->update();
             }
         }
@@ -255,10 +356,10 @@ sub page_before_template {
         # information we retrieved from the API
         my $slack_users;
         foreach my $su (@slack_users_api) {
-            my $s = Bugzilla::Extension::SlackBugz::SlackUser->match({ slack_id => $su->{'id'} });
+            my $s = first { $_->slack_id eq $su->{'id'} } values %susers;
             if ($s) {
                 my $t = {
-                    slack_user => $s->[0],
+                    slack_user => $s,
                     nick => $su->{'name'},
                     email => $su->{'profile'}->{'email'},
                     real_name => $su->{'profile'}->{'real_name_normalized'},
@@ -278,8 +379,49 @@ sub page_before_template {
         push @templist, sort {$a->name cmp $b->name} @{ $bzusers };
         $params->{vars}->{bzusers} = \@templist;
     } elsif ($page_id =~ /channelmap/) {
+        my $slack_channels_api = _get_slack_channels();
+        _ensure_slack_channels_persisted($slack_channels_api);
+
+        my %channels = map { $_->id => $_ } Bugzilla::Extension::SlackBugz::SlackChannel->get_all();
+        my %components = map { $_->id => $_ } Bugzilla::Component->get_all();
+
+        # Execute this block only when the user hit the save button
+        if ($action eq 'save_mapping') {
+            # Get the lists of the form
+            my @form_channel_ids = $cgi->param('channels[]');
+
+            # Iterate through both lists (equal length is assumed)
+            for(my $x = 0; $x < scalar @form_channel_ids; $x++) {
+                my $channel = $channels{$form_channel_ids[$x]};
+                my %form_component_ids = map { $_ => 1 } $cgi->param('components['.$form_channel_ids[$x].'][]');
+
+                foreach my $component_id (keys %components) {
+                    if (exists $form_component_ids{$component_id}) {
+                        # need to add component
+                        $channel->add_component($components{$component_id});
+                    } else {
+                        # need to remove component
+                        $channel->remove_component($components{$component_id});
+                    }
+                }
+            }
+        }
+
+        # We only persist the mapping and the Slack ID in the database so we need
+        # to lookup the channel name from the API; construct a data structure
+        # for the template containing the actual object and the name
+        my $slack_channels;
+        foreach my $c (@$slack_channels_api) {
+            my $t = first { $_->channel_id eq $c->{'id'} } values %channels;
+            push @$slack_channels, {
+                slack_channel => $t,
+                name => $c->{'name'}
+            };
+        }
+
 	$params->{vars}->{domain} = _get_slack_domain();
-        $params->{vars}->{channels} = _get_slack_channels();
+        $params->{vars}->{components} = [sort { $a->name cmp $b->name } values %components];
+        $params->{vars}->{channels} = $slack_channels;
     }
 }
 
