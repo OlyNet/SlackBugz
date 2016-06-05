@@ -33,6 +33,18 @@ sub get_param_list {
             default => 1,
         },
         {
+            name    => 'SlackIncludeComment',
+            desc    => 'Set this to "On" in order to attach the bug\'s description in Slack message.',
+            type    => 'b',
+            default => 1,
+        },
+        {
+            name    => 'SlackDefaultColor',
+            desc    => 'The default color to use when messaging to Slack',
+            type    => 't',
+            default => 'warning'
+        },
+        {
             name    => 'SlackDefaultChannel',
             desc    => 'The default channel to post messages to',
             type    => 't',

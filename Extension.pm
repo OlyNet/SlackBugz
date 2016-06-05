@@ -22,6 +22,7 @@ use Bugzilla::Util qw(trim);
 use Bugzilla::Extension::SlackBugz::Util;
 use Bugzilla::Extension::SlackBugz::SlackUser;
 use Bugzilla::Extension::SlackBugz::SlackChannel;
+use Bugzilla::Extension::SlackBugz::SlackColor;
 
 use List::Util qw(first);
 use Template::Stash;
@@ -50,7 +51,7 @@ sub db_schema_abstract_schema {
 
     $schema->{slackbugz_usermap} = {
         FIELDS => [
-           id => {
+            id => {
                 TYPE => 'MEDIUMSERIAL',
                 NOTNULL => 1,
                 PRIMARYKEY => 1
@@ -129,6 +130,35 @@ sub db_schema_abstract_schema {
             },
         ],
     };
+
+    $schema->{slackbugz_colormap} = {
+        FIELDS => [
+            id => {
+                TYPE => 'MEDIUMSERIAL',
+                NOTNULL => 1,
+                PRIMARYKEY => 1
+            },
+            severity_id => {
+                TYPE => 'INT2',
+                NOTNULL => 1,
+                REFERENCES => {
+                    TABLE => 'bug_severity',
+                    COLUMN => 'id',
+                    DELETE => 'CASCADE',
+                },
+            },
+            color => {
+                TYPE => 'varchar(10)', 
+                NOTNULL => 1,
+            },
+        ],
+        INDEXES => [
+            slackbugz_severity_unique_idx => {
+                FIELDS => ['severity_id'],
+                TYPE   => 'UNIQUE',
+            },
+        ],
+    };
 }
 
 sub _get_slack_domain {
@@ -197,7 +227,7 @@ sub _post_msg {
 
     $message->{color} ||= 'good';
     $message->{text} ||= undef;
-    $message->{channel} ||= Bugzilla->params->{'SlackDefaultChannel'} || '#general';
+    #$message->{channel} ||= Bugzilla->params->{'SlackDefaultChannel'} || '#general';
     $message->{username} ||= Bugzilla->params->{'SlackBotName'} || 'BugZilla';
 
     my $msg = $slack->chat->post_message($message);
@@ -205,6 +235,16 @@ sub _post_msg {
     if (!$msg->{ok}) {
         ThrowUserError('slackbugz_message_error', {return_message => $msg->{error}});
     }
+}
+
+sub _format_new_bug_header_message {
+    my ($message, $bug) = @_;
+    return $message unless defined $message;
+    $message =~ s/\$\{(?:author|reporter)\}/$bug->reporter->real_name/ig;
+    $message =~ s/\$\{severity\}/$bug->bug_severity/ig;
+    $message =~ s/\$\{priority\}/$bug->priority/ig;
+    $message =~ s/\$\{status\}/$bug->status->name/ig;
+    return $message;
 }
 
 # The following subs will override the hooks and modify the behavior
@@ -218,26 +258,31 @@ sub bug_end_of_create {
     my $base_url = _get_base_url();
     my $new_bug_message = Bugzilla->params->{'SlackNewBugMessage'} || undef;
     my $bug_link = $base_url.'show_bug.cgi?id='.$bug_id;
-    my $text = '<'.$bug_link.'|#'.$bug_id.' '.$bug->short_desc.'>';
+    my $slack_color = $bug->slack_color->color || Bugzilla->params->{'SlackDefaultColor'} || 'warning';
 
     my $message = {
+        channel => '',
         username => Bugzilla->params->{'SlackBotName'} || 'BugZilla',
-        icon_url => _get_base_url().'extensions/SlackBugz/web/bz.png',
+        icon_url => $base_url.'extensions/SlackBugz/web/bz.png',
         as_user => 0,
-        text => $new_bug_message,
+        text => _format_new_bug_header_message($new_bug_message, $bug),
         attachments => [{
-            color => 'warning',
-            title => $bug->short_desc,
-            text => $bug->comments->[0]->body,
-            title_link => '<'.$bug_link.'|#'.$bug_id.'>'
+            color => $slack_color,
+            title => "#$bug_id: ".$bug->short_desc,
+            text => '',
+            title_link => $bug_link
         }]
     };
 
+    if (Bugzilla->params->{'SlackIncludeComment'} && scalar @{ $bug->comments }) {
+        $message->{attachments}->[0]->{text} => $bug->comments->[0]->body;
+    }
+
     # If users shall be notified by direct messages, get the ID of the assignee
-    # and figure out his name on Slack
-    if (Bugzilla->params->{'SlackDirectMessages'}) {
+    # and figure out his name on Slack, if this is configured
+    if (Bugzilla->params->{'SlackDirectMessages'} && defined $bug->assigned_to->slack_user) {
         $message->{channel} = _get_slack_username($bug->assigned_to->slack_user->slack_id);
-        _post_msg($message);
+        _post_msg($message) if defined $message->{channel};
     }
 
     # Since we linked our Slack channels for convenience to Bugzilla::Component,
@@ -253,6 +298,25 @@ sub bug_end_of_update {
     my ($bug, $old_bug, $timestamp, $changes) =
         @$args{qw(bug old_bug timestamp changes)};
 
+    my $bug_id = $bug->id;
+    my $bug_severity = $bug->bug_severity;
+    my $bug_priority = $bug->priority;
+    my $base_url = _get_base_url();
+    my $bug_link = $base_url.'show_bug.cgi?id='.$bug_id;
+    my $slack_color = $bug->slack_color->color || Bugzilla->params->{'SlackDefaultColor'} || 'warning';
+    my $message = {
+        username => Bugzilla->params->{'SlackBotName'} || 'BugZilla',
+        icon_url => _get_base_url().'extensions/SlackBugz/web/bz.png',
+        as_user => 0,
+        #text => $new_bug_message,
+        attachments => [{
+            color => $slack_color,
+            title => "#$bug_id: ".$bug->short_desc,
+            text => undef,
+            title_link => $bug_link
+        }]
+    };
+
     foreach my $field (keys %$changes) {
         my $used_to_be = $changes->{$field}->[0];
         my $now_it_is  = $changes->{$field}->[1];
@@ -264,21 +328,27 @@ sub bug_end_of_update {
     if (my $status_change = $changes->{'bug_status'}) {
         my $old_status = new Bugzilla::Status({ name => $status_change->[0] });
         my $new_status = new Bugzilla::Status({ name => $status_change->[1] });
-        if ($new_status->is_open && !$old_status->is_open) {
-            $status_message = "Bug re-opened!";
-        }
-        if (!$new_status->is_open && $old_status->is_open) {
-            $status_message = "Bug closed!";
-        }
+        $message->{attachments}->[0]->{text} .= "Status: *".$old_status."* \x{2192} *".$new_status."*";
+        #if ($new_status->is_open && !$old_status->is_open) {
+        #}
+        #if (!$new_status->is_open && $old_status->is_open) {
+        #    $status_message = "Bug closed!";
+        #}
     }
 
-    my $bug_id = $bug->id;
-    my $num_changes = scalar keys %$changes;
-    my $result = "There were $num_changes changes to fields on bug $bug_id"
-                 . " at $timestamp.";
-    # Uncomment this line to see $result in your webserver's error log whenever
-    # you update a bug.
-    # warn $result;
+    # If users shall be notified by direct messages, get the ID of the assignee
+    # and figure out his name on Slack, if this is configured
+    if (Bugzilla->params->{'SlackDirectMessages'} && defined $bug->assigned_to->slack_user) {
+        $message->{channel} = _get_slack_username($bug->assigned_to->slack_user->slack_id);
+        _post_msg($message);
+    }
+
+    # Since we linked our Slack channels for convenience to Bugzilla::Component,
+    # it's now easy to iterate over all channels to be notified
+    foreach my $channel (@{ $bug->component_obj->channels }) {
+        $message->{channel} = $channel->channel_id;
+        _post_msg($message);
+    }
 }
 
 sub config_add_panels {
@@ -422,6 +492,37 @@ sub page_before_template {
 	$params->{vars}->{domain} = _get_slack_domain();
         $params->{vars}->{components} = [sort { $a->name cmp $b->name } values %components];
         $params->{vars}->{channels} = $slack_channels;
+    } elsif ($page_id =~ /colormap/) {
+        my %severities = %{ $dbh->selectall_hashref("select id, value as name, sortkey from bug_severity where isactive = 1", "id") };
+        my %colors = map { $_->severity_id => $_ } Bugzilla::Extension::SlackBugz::SlackColor->get_all();
+
+        # Execute this block only when the user hit the save button
+        if ($action eq 'save_mapping') {
+            # Get the lists of the form
+            my @severity_ids = $cgi->param('severity[]');
+            my @colors = $cgi->param('color[]');
+
+            # Iterate through both lists (equal length is assumed)
+            for(my $x = 0; $x < scalar @severity_ids; $x++) {
+                my $severity = $severities{$severity_ids[$x]};
+                my $color = $colors[$x];
+
+                if (defined $severity && defined $color) {
+                    my $col = $colors{$severity->{id}};
+                    if (defined $col) {
+                        $col->set_color($color);
+                        $col->update();
+                    } else {
+                        $col = Bugzilla::Extension::SlackBugz::SlackColor->create({ severity_id => $severity->{id}, color => $color });                        
+                    }
+                }
+            }
+        }
+
+        %colors = map { $_->severity_id => $_ } Bugzilla::Extension::SlackBugz::SlackColor->get_all();
+
+        $params->{vars}->{severities} = [sort {$a->{sortkey} cmp $b->{sortkey}} values %severities];
+        $params->{vars}->{colors} = [values %colors];
     }
 }
 

@@ -11,4 +11,8 @@
     [% title = "Slack message failed" %]
     Received message '[% return_message FILTER html %]' from Slack.
 
+[% ELSIF error == "slackbugz_invalid_color" %]
+    [% title = "SlackBugz administration" %]
+    The color value you entered ('[% color FILTER html %]') is invalid. Only hex values and either 'good', 'warning' or 'danger' is allowed (see <a href="https://api.slack.com/docs/attachments#color">Slack documentation</a>).
+
 [% END %]
