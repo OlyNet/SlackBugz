@@ -17,7 +17,7 @@ use constant REQUIRED_MODULES => [
     {
         package => 'WebService-Slack-WebApi',
         module => 'WebService::Slack::WebApi',
-        version => 0
+        version => '0.08'
     }
 ];
 

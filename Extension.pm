@@ -226,7 +226,7 @@ sub _post_msg {
     return unless defined($slack);
 
     $message->{color} ||= 'good';
-    $message->{text} ||= undef;
+    #$message->{text} ||= "";
     #$message->{channel} ||= Bugzilla->params->{'SlackDefaultChannel'} || '#general';
     $message->{username} ||= Bugzilla->params->{'SlackBotName'} || 'BugZilla';
 
@@ -308,19 +308,14 @@ sub bug_end_of_update {
         username => Bugzilla->params->{'SlackBotName'} || 'BugZilla',
         icon_url => _get_base_url().'extensions/SlackBugz/web/bz.png',
         as_user => 0,
-        #text => $new_bug_message,
+        text => "",
         attachments => [{
             color => $slack_color,
             title => "#$bug_id: ".$bug->short_desc,
-            text => undef,
+            text => "",
             title_link => $bug_link
         }]
     };
-
-    foreach my $field (keys %$changes) {
-        my $used_to_be = $changes->{$field}->[0];
-        my $now_it_is  = $changes->{$field}->[1];
-    }
 
     my $old_summary = $old_bug->short_desc;
 
@@ -328,13 +323,25 @@ sub bug_end_of_update {
     if (my $status_change = $changes->{'bug_status'}) {
         my $old_status = new Bugzilla::Status({ name => $status_change->[0] });
         my $new_status = new Bugzilla::Status({ name => $status_change->[1] });
-        $message->{attachments}->[0]->{text} .= "Status: *".$old_status."* \x{2192} *".$new_status."*";
-        #if ($new_status->is_open && !$old_status->is_open) {
-        #}
-        #if (!$new_status->is_open && $old_status->is_open) {
-        #    $status_message = "Bug closed!";
-        #}
+
+	$message->{text} = "#$bug_id was ";
+
+        if ($new_status->is_open && !$old_status->is_open) {
+		$message->{text} .= "re-opened";
+        }
+
+        if (!$new_status->is_open && $old_status->is_open) {
+		$message->{text} .= "closed";
+        }
     }
+
+    foreach my $field (keys %$changes) {
+        my $used_to_be = $changes->{$field}->[0];
+        my $now_it_is  = $changes->{$field}->[1];
+        my $bug_field = new Bugzilla::Field({name => $field});
+        $message->{attachments}->[0]->{text} .= $bug_field->description.": * $used_to_be * \x{2192} * $now_it_is *\n";
+    }
+
 
     # If users shall be notified by direct messages, get the ID of the assignee
     # and figure out his name on Slack, if this is configured

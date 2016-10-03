@@ -1,0 +1,37 @@
+[%# This Source Code Form is subject to the terms of the Mozilla Public
+  # License, v. 2.0. If a copy of the MPL was not distributed with this
+  # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+  #
+  # This Source Code Form is "Incompatible With Secondary Licenses", as
+  # defined by the Mozilla Public License, v. 2.0.
+  #%]
+[% INCLUDE global/header.html.tmpl
+   title = "SlackBugz color mapping"
+   javascript_urls = ['extensions/SlackBugz/web/jscolor.min.js']
+%]
+
+<h1>SlackBugz color mapping</h1>
+
+<pre>[% dbg %]</pre>
+
+[% IF severities.size %]
+<form method="POST" action="page.cgi?id=slackbugz/colormap.html">
+  <table id="color_admin_table" border="1" cellpadding="4" cellspacing="0">
+    <tr>
+      <th>BugZilla severity</th>
+      <th>Slack color</th>
+    </tr>
+    [% FOREACH s IN severities %]
+    <tr>
+      <td>[% s.name %]</td>
+      <td>
+        <input type="hidden" name="severity[]" value="[% s.id %]">
+        <input class="jscolor" name="color[]" value="[% FOREACH c IN colors %][% c.color IF c.severity_id == s.id %][% END %]"> 
+      </td>
+    </tr>
+  [% END %]
+  </table>
+  <button type="submit" name="action" value="save_mapping">Save</button>
+</form>
+[% END %]
+[% INCLUDE global/footer.html.tmpl %]
