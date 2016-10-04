@@ -180,6 +180,14 @@ sub _get_slack_username {
     return $r->{'name'} if $r;
 }
 
+sub _get_slack_user_im_channel {
+    my $slack_id = shift;
+    my $r = $slack->im->list();
+    ThrowUserError('', {slack_id => $slack_id}) unless $r;
+    my $im = first { $_->{user} eq $slack_id } @{$r->{ims}};
+    return $im->{id};
+}
+
 sub _get_slack_users {
     return grep { $_->{'name'} !~ /bot$/i } @{ $slack->users->list->{'members'} };
 }
@@ -226,6 +234,7 @@ sub _post_msg {
     return unless defined($slack);
 
     $message->{color} ||= 'good';
+    $message->{parse} = 'full';
     #$message->{text} ||= "";
     #$message->{channel} ||= Bugzilla->params->{'SlackDefaultChannel'} || '#general';
     $message->{username} ||= Bugzilla->params->{'SlackBotName'} || 'BugZilla';
@@ -281,7 +290,7 @@ sub bug_end_of_create {
     # If users shall be notified by direct messages, get the ID of the assignee
     # and figure out his name on Slack, if this is configured
     if (Bugzilla->params->{'SlackDirectMessages'} && defined $bug->assigned_to->slack_user) {
-        $message->{channel} = _get_slack_username($bug->assigned_to->slack_user->slack_id);
+        $message->{channel} = _get_slack_user_im_channel($bug->assigned_to->slack_user->slack_id);
         _post_msg($message) if defined $message->{channel};
     }
 
@@ -339,15 +348,19 @@ sub bug_end_of_update {
         my $used_to_be = $changes->{$field}->[0];
         my $now_it_is  = $changes->{$field}->[1];
         my $bug_field = new Bugzilla::Field({name => $field});
-        $message->{attachments}->[0]->{text} .= $bug_field->description.": * $used_to_be * \x{2192} * $now_it_is *\n";
+        push @{ $message->{attachments}->[0]->{fields} }, {
+            'title' => $bug_field->description,
+            'value' => $now_it_is,
+            'short' => length scalar $now_it_is > 15 ? 'false' : 'true'
+        };
     }
 
 
     # If users shall be notified by direct messages, get the ID of the assignee
     # and figure out his name on Slack, if this is configured
     if (Bugzilla->params->{'SlackDirectMessages'} && defined $bug->assigned_to->slack_user) {
-        $message->{channel} = _get_slack_username($bug->assigned_to->slack_user->slack_id);
-        _post_msg($message);
+        $message->{channel} = _get_slack_user_im_channel($bug->assigned_to->slack_user->slack_id);
+        _post_msg($message) if defined $message->{channel};
     }
 
     # Since we linked our Slack channels for convenience to Bugzilla::Component,
