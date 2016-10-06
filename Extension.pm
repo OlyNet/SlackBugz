@@ -183,6 +183,7 @@ sub _get_slack_username {
 sub _get_slack_user_im_channel {
     my $slack_id = shift;
     my $r = $slack->im->list();
+#    print Dumper($r);
     ThrowUserError('', {slack_id => $slack_id}) unless $r;
     my $im = first { $_->{user} eq $slack_id } @{$r->{ims}};
     return $im->{id};
@@ -283,7 +284,7 @@ sub bug_end_of_create {
         }]
     };
 
-    if (Bugzilla->params->{'SlackIncludeComment'} && scalar @{ $bug->comments }) {
+    if (defined Bugzilla->params->{'SlackIncludeComment'} && scalar @{ $bug->comments }) {
         $message->{attachments}->[0]->{text} => $bug->comments->[0]->body;
     }
 
@@ -333,14 +334,12 @@ sub bug_end_of_update {
         my $old_status = new Bugzilla::Status({ name => $status_change->[0] });
         my $new_status = new Bugzilla::Status({ name => $status_change->[1] });
 
-	$message->{text} = "#$bug_id was ";
-
         if ($new_status->is_open && !$old_status->is_open) {
-		$message->{text} .= "re-opened";
+	#	$message->{text} .= "re-opened";
         }
 
         if (!$new_status->is_open && $old_status->is_open) {
-		$message->{text} .= "closed";
+	#	$message->{text} .= "closed";
         }
     }
 
