@@ -1,0 +1,26 @@
+[%# This Source Code Form is subject to the terms of the Mozilla Public
+  # License, v. 2.0. If a copy of the MPL was not distributed with this
+  # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+  #
+  # This Source Code Form is "Incompatible With Secondary Licenses", as
+  # defined by the Mozilla Public License, v. 2.0.
+  #%]
+[% INCLUDE global/header.html.tmpl
+   title = "SlackBugz: bug field selection"
+%]
+
+<h1>SlackBugz: bug field selection for update trigger</h1>
+
+<pre>[% dbg %]</pre>
+
+[% IF fields.size %]
+<form method="POST" action="page.cgi?id=slackbugz/fields.html">
+  <select name="fields[]" multiple size="20">
+    [% FOREACH f IN fields %]
+      <option value="[% f.id %]"[% " selected" IF trigger_fields.grep(f.id).size %]>[% f.description %]</option>
+    [% END %]
+  </select><br>
+  <button type="submit" name="action" value="save_mapping">Save</button>
+</form>
+[% END %]
+[% INCLUDE global/footer.html.tmpl %]

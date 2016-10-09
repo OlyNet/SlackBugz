@@ -16,6 +16,7 @@ use Bugzilla::Constants;
 use Bugzilla::Error;
 use WebService::Slack::WebApi;
 use Bugzilla::User;
+use Bugzilla::Field;
 use Bugzilla::Util qw(trim);
 
 # This code for this is in ../extensions/SlackBugz/lib/Util.pm
@@ -100,6 +101,20 @@ sub db_schema_abstract_schema {
                 TYPE   => 'UNIQUE',
             },
         ],
+    };
+
+    $schema->{slackbugz_trigger_fields} = {
+        FIELDS => [
+            field_id => {
+                TYPE => 'INT3',
+                NOTNULL => 1,
+                REFERENCES => {
+                    TABLE => 'fielddefs',
+                    COLUMN => 'id',
+                    DELETE => 'CASCADE'
+                }
+            }
+        ]
     };
 
     $schema->{slackbugz_channels_components} = {
@@ -308,6 +323,7 @@ sub bug_end_of_update {
     my ($bug, $old_bug, $timestamp, $changes) =
         @$args{qw(bug old_bug timestamp changes)};
 
+    my $dbh = Bugzilla->dbh;
     my $bug_id = $bug->id;
     my $bug_severity = $bug->bug_severity;
     my $bug_priority = $bug->priority;
@@ -331,42 +347,46 @@ sub bug_end_of_update {
 
     my $status_message;
     if (my $status_change = $changes->{'bug_status'}) {
-        my $old_status = new Bugzilla::Status({ name => $status_change->[0] });
         my $new_status = new Bugzilla::Status({ name => $status_change->[1] });
 
-        if ($new_status->is_open && !$old_status->is_open) {
-	#	$message->{text} .= "re-opened";
-        }
-
-        if (!$new_status->is_open && $old_status->is_open) {
-	#	$message->{text} .= "closed";
-        }
+	push @{ $message->{attachments}->[0]->{fields} }, {
+            'title' => 'Status',
+            'value' => $new_status->name,
+            'short' => 'true'
+        };
     }
 
+    my $trigger_fields = $dbh->selectall_hashref("select field_id from slackbugz_trigger_fields", "field_id");
     foreach my $field (keys %$changes) {
         my $used_to_be = $changes->{$field}->[0];
         my $now_it_is  = $changes->{$field}->[1];
         my $bug_field = new Bugzilla::Field({name => $field});
-        push @{ $message->{attachments}->[0]->{fields} }, {
-            'title' => $bug_field->description,
-            'value' => $now_it_is,
-            'short' => length scalar $now_it_is > 15 ? 'false' : 'true'
-        };
+
+        # Only include field change in message if field is listed in trigger fields
+        if (defined $trigger_fields->{$bug_field->id}) {
+            push @{ $message->{attachments}->[0]->{fields} }, {
+                'title' => $bug_field->description,
+                'value' => $now_it_is,
+                'short' => length scalar $now_it_is > 15 ? 'false' : 'true'
+            };
+        }
     }
 
+    # Only send message if any fields are added (including status change)
+    if (defined $message->{attachments}->[0]->{fields} && scalar @{ $message->{attachments}->[0]->{fields} }) {
+        # If users shall be notified by direct messages, get the ID of the assignee
+        # and figure out his name on Slack, if this is configured
+        if (Bugzilla->params->{'SlackDirectMessages'} && defined $bug->assigned_to->slack_user) {
+            $message->{channel} = _get_slack_user_im_channel($bug->assigned_to->slack_user->slack_id);
+            _post_msg($message) if defined $message->{channel};
+        }
 
-    # If users shall be notified by direct messages, get the ID of the assignee
-    # and figure out his name on Slack, if this is configured
-    if (Bugzilla->params->{'SlackDirectMessages'} && defined $bug->assigned_to->slack_user) {
-        $message->{channel} = _get_slack_user_im_channel($bug->assigned_to->slack_user->slack_id);
-        _post_msg($message) if defined $message->{channel};
-    }
-
-    # Since we linked our Slack channels for convenience to Bugzilla::Component,
-    # it's now easy to iterate over all channels to be notified
-    foreach my $channel (@{ $bug->component_obj->channels }) {
-        $message->{channel} = $channel->channel_id;
-        _post_msg($message);
+        # Since we linked our Slack channels for convenience to Bugzilla::Component,
+        # it's now easy to iterate over all channels to be notified
+        foreach my $channel (@{ $bug->component_obj->channels }) {
+            $message->{channel} = $channel->channel_id;
+            _post_msg($message);
+        }
     }
 }
 
@@ -542,6 +562,25 @@ sub page_before_template {
 
         $params->{vars}->{severities} = [sort {$a->{sortkey} cmp $b->{sortkey}} values %severities];
         $params->{vars}->{colors} = [values %colors];
+    } elsif ($page_id =~ /fields/) {
+        # Returns an arrayref when not setting 'by_name'
+        my %fields = map { $_->id => $_ } Bugzilla::Field->get_all();#->fields({ obsolete => 0, is_mandatory => 0 });
+        
+        if ($action eq 'save_mapping') {
+            $dbh->bz_start_transaction();
+            $dbh->do("DELETE FROM slackbugz_trigger_fields");
+            my @field_ids = $cgi->param('fields[]');
+            for(my $x = 0; $x < scalar @field_ids; $x++) {
+                my $field = $fields{$field_ids[$x]};
+                if (defined $field) {
+                    $dbh->do("INSERT INTO slackbugz_trigger_fields VALUES(?)", undef, ($field->id));
+                }
+            }
+            $dbh->bz_commit_transaction();
+        }
+
+        $params->{vars}->{trigger_fields} = $dbh->selectall_arrayref("select field_id from slackbugz_trigger_fields");
+        $params->{vars}->{fields} = [ values %fields ];
     }
 }
 
